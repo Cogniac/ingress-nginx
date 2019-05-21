@@ -29,8 +29,7 @@ var _ = framework.IngressNginxDescribe("Annotations - grpc", func() {
 	f := framework.NewDefaultFramework("grpc")
 
 	BeforeEach(func() {
-		err := f.NewGRPCFortuneTellerDeployment()
-		Expect(err).NotTo(HaveOccurred())
+		f.NewGRPCFortuneTellerDeployment()
 	})
 
 	Context("when grpc is enabled", func() {
@@ -38,26 +37,23 @@ var _ = framework.IngressNginxDescribe("Annotations - grpc", func() {
 			host := "grpc"
 
 			annotations := map[string]string{
-				"nginx.ingress.kubernetes.io/grpc-backend": "true",
+				"nginx.ingress.kubernetes.io/backend-protocol": "GRPC",
 			}
-			ing, err := f.EnsureIngress(framework.NewSingleIngress(host, "/", host, f.IngressController.Namespace, "fortune-teller", 50051, &annotations))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(ing).NotTo(BeNil())
 
-			err = f.WaitForNginxServer(host,
+			ing := framework.NewSingleIngress(host, "/", host, f.Namespace, "fortune-teller", 50051, &annotations)
+			f.EnsureIngress(ing)
+
+			f.WaitForNginxServer(host,
 				func(server string) bool {
-					return Expect(server).Should(ContainSubstring(fmt.Sprintf("server_name %v", host))) &&
-						Expect(server).ShouldNot(ContainSubstring("return 503"))
+					return Expect(server).Should(ContainSubstring(fmt.Sprintf("server_name %v", host)))
 				})
-			Expect(err).NotTo(HaveOccurred())
 
-			err = f.WaitForNginxServer(host,
+			f.WaitForNginxServer(host,
 				func(server string) bool {
 					return Expect(server).Should(ContainSubstring("grpc_pass")) &&
 						Expect(server).Should(ContainSubstring("grpc_set_header")) &&
 						Expect(server).ShouldNot(ContainSubstring("proxy_pass"))
 				})
-			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })

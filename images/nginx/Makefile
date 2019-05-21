@@ -13,12 +13,12 @@
 # limitations under the License.
 
 # 0.0.0 shouldn't clobber any released builds
-TAG ?= 0.53
+TAG ?= 0.84
 REGISTRY ?= quay.io/kubernetes-ingress-controller
 ARCH ?= $(shell go env GOARCH)
 DOCKER ?= docker
 
-ALL_ARCH = amd64 arm arm64 ppc64le s390x
+ALL_ARCH = amd64 arm64
 SED_I?=sed -i
 GOHOSTOS ?= $(shell go env GOHOSTOS)
 
@@ -26,26 +26,18 @@ ifeq ($(GOHOSTOS),darwin)
   SED_I=sed -i ''
 endif
 
-QEMUVERSION=v2.12.0
+QEMUVERSION=v3.0.0
 
 IMGNAME = nginx
 IMAGE = $(REGISTRY)/$(IMGNAME)
 MULTI_ARCH_IMG = $(IMAGE)-$(ARCH)
 
 # Set default base image dynamically for each arch
-BASEIMAGE?=gcr.io/google-containers/debian-base-$(ARCH):0.3
+#BASEIMAGE?=quay.io/kubernetes-ingress-controller/debian-base-$(ARCH):0.1
+BASEIMAGE?=cogniac/debian-base:dev-0.2
 
-ifeq ($(ARCH),arm)
-	QEMUARCH=arm
-endif
 ifeq ($(ARCH),arm64)
 	QEMUARCH=aarch64
-endif
-ifeq ($(ARCH),ppc64le)
-	QEMUARCH=ppc64le
-endif
-ifeq ($(ARCH),s390x)
-	QEMUARCH=s390x
 endif
 
 TEMP_DIR := $(shell mktemp -d)
@@ -67,7 +59,7 @@ all-push: $(addprefix sub-push-,$(ALL_ARCH))
 
 container: .container-$(ARCH)
 .container-$(ARCH):
-	cp ./* $(TEMP_DIR)
+	cp -r ./rootfs/* $(TEMP_DIR)
 	cd $(TEMP_DIR) && $(SED_I) 's|BASEIMAGE|$(BASEIMAGE)|g' Dockerfile
 	cd $(TEMP_DIR) && $(SED_I) "s|ARCH|$(QEMUARCH)|g" Dockerfile
 
@@ -80,7 +72,7 @@ else
 	cd $(TEMP_DIR) && $(SED_I) "s/CROSS_BUILD_//g" Dockerfile
 endif
 
-	$(DOCKER) build -t $(MULTI_ARCH_IMG):$(TAG) $(TEMP_DIR)
+	$(DOCKER) build --no-cache -t $(MULTI_ARCH_IMG):$(TAG) $(TEMP_DIR)
 
 ifeq ($(ARCH), amd64)
 	# This is for to maintain the backward compatibility

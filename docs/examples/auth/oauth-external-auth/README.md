@@ -1,4 +1,4 @@
-# External Authentication
+# External OAUTH Authentication
 
 ### Overview
 
@@ -6,7 +6,7 @@ The `auth-url` and `auth-signin` annotations allow you to use an external
 authentication provider to protect your Ingress resources.
 
 !!! Important
-	this annotation requires `nginx-ingress-controller v0.9.0` or greater.)
+    This annotation requires `nginx-ingress-controller v0.9.0` or greater.)
 
 ### Key Detail
 
@@ -24,8 +24,8 @@ Sample:
 metadata:
   name: application
   annotations:
-    "nginx.ingress.kubernetes.io/auth-url": "https://$host/oauth2/auth"
-    "nginx.ingress.kubernetes.io/auth-signin": "https://$host/oauth2/sign_in"
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
 ...
 ```
 
@@ -39,7 +39,7 @@ into a Kubernetes cluster and use it to protect the Kubernetes Dashboard using g
 1. Install the kubernetes dashboard
 
 ```console
-kubectl create -f https://raw.githubusercontent.com/kubernetes/kops/master/addons/kubernetes-dashboard/v1.5.0.yaml
+kubectl create -f https://raw.githubusercontent.com/kubernetes/kops/master/addons/kubernetes-dashboard/v1.10.1.yaml
 ```
 
 2. Create a [custom Github OAuth application](https://github.com/settings/applications/new)

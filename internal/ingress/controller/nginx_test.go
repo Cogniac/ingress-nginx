@@ -22,11 +22,17 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	jsoniter "github.com/json-iterator/go"
 	apiv1 "k8s.io/api/core/v1"
+
 	"k8s.io/ingress-nginx/internal/ingress"
+	"k8s.io/ingress-nginx/internal/nginx"
 )
 
 func TestIsDynamicConfigurationEnough(t *testing.T) {
@@ -52,6 +58,9 @@ func TestIsDynamicConfigurationEnough(t *testing.T) {
 				Backend: "fakenamespace-myapp-80",
 			},
 		},
+		SSLCert: ingress.SSLCert{
+			PemCertKey: "fake-certificate",
+		},
 	}}
 
 	commonConfig := &ingress.Configuration{
@@ -63,6 +72,9 @@ func TestIsDynamicConfigurationEnough(t *testing.T) {
 		runningConfig: &ingress.Configuration{
 			Backends: backends,
 			Servers:  servers,
+		},
+		cfg: &Configuration{
+			DynamicCertificatesEnabled: false,
 		},
 	}
 
@@ -87,16 +99,114 @@ func TestIsDynamicConfigurationEnough(t *testing.T) {
 		t.Errorf("Expected to be dynamically configurable when only backends change")
 	}
 
+	n.cfg.DynamicCertificatesEnabled = true
+
+	newServers := []*ingress.Server{{
+		Hostname: "myapp1.fake",
+		Locations: []*ingress.Location{
+			{
+				Path:    "/",
+				Backend: "fakenamespace-myapp-80",
+			},
+		},
+		SSLCert: ingress.SSLCert{
+			PemCertKey: "fake-certificate",
+		},
+	}}
+
+	newConfig = &ingress.Configuration{
+		Backends: backends,
+		Servers:  newServers,
+	}
+	if n.IsDynamicConfigurationEnough(newConfig) {
+		t.Errorf("Expected to not be dynamically configurable when dynamic certificates is enabled and a non-certificate field in servers is updated")
+	}
+
+	newServers[0].Hostname = "myapp.fake"
+	newServers[0].SSLCert.PemCertKey = "new-fake-certificate"
+
+	newConfig = &ingress.Configuration{
+		Backends: backends,
+		Servers:  newServers,
+	}
+	if !n.IsDynamicConfigurationEnough(newConfig) {
+		t.Errorf("Expected to be dynamically configurable when only SSLCert changes")
+	}
+
+	newConfig = &ingress.Configuration{
+		Backends: []*ingress.Backend{{Name: "a-backend-8080"}},
+		Servers:  newServers,
+	}
+	if !n.IsDynamicConfigurationEnough(newConfig) {
+		t.Errorf("Expected to be dynamically configurable when backend and SSLCert changes")
+	}
+
 	if !n.runningConfig.Equal(commonConfig) {
 		t.Errorf("Expected running config to not change")
 	}
 
-	if !newConfig.Equal(&ingress.Configuration{Backends: []*ingress.Backend{{Name: "a-backend-8080"}}, Servers: servers}) {
+	if !newConfig.Equal(&ingress.Configuration{Backends: []*ingress.Backend{{Name: "a-backend-8080"}}, Servers: newServers}) {
 		t.Errorf("Expected new config to not change")
 	}
 }
 
 func TestConfigureDynamically(t *testing.T) {
+	listener, err := net.Listen("unix", nginx.StatusSocket)
+	if err != nil {
+		t.Errorf("crating unix listener: %s", err)
+	}
+	defer listener.Close()
+	defer os.Remove(nginx.StatusSocket)
+
+	streamListener, err := net.Listen("unix", nginx.StreamSocket)
+	if err != nil {
+		t.Errorf("crating unix listener: %s", err)
+	}
+	defer streamListener.Close()
+	defer os.Remove(nginx.StreamSocket)
+
+	server := &httptest.Server{
+		Listener: listener,
+		Config: &http.Server{
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+
+				if r.Method != "POST" {
+					t.Errorf("expected a 'POST' request, got '%s'", r.Method)
+				}
+
+				b, err := ioutil.ReadAll(r.Body)
+				if err != nil && err != io.EOF {
+					t.Fatal(err)
+				}
+				body := string(b)
+
+				switch r.URL.Path {
+				case "/configuration/backends":
+					{
+						if strings.Contains(body, "target") {
+							t.Errorf("unexpected target reference in JSON content: %v", body)
+						}
+
+						if !strings.Contains(body, "service") {
+							t.Errorf("service reference should be present in JSON content: %v", body)
+						}
+					}
+				case "/configuration/general":
+					{
+						if !strings.Contains(body, "controllerPodsCount") {
+							t.Errorf("controllerPodsCount should be present in JSON content: %v", body)
+						}
+					}
+				default:
+					t.Errorf("unknown request to %s", r.URL.Path)
+				}
+			}),
+		},
+	}
+	defer server.Close()
+	server.Start()
+
 	target := &apiv1.ObjectReference{}
 
 	backends := []*ingress.Backend{{
@@ -128,42 +238,85 @@ func TestConfigureDynamically(t *testing.T) {
 	}}
 
 	commonConfig := &ingress.Configuration{
-		Backends: backends,
-		Servers:  servers,
+		Backends:            backends,
+		Servers:             servers,
+		ControllerPodsCount: 2,
 	}
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-
-		if r.Method != "POST" {
-			t.Errorf("expected a 'POST' request, got '%s'", r.Method)
-		}
-
-		b, err := ioutil.ReadAll(r.Body)
-		if err != nil && err != io.EOF {
-			t.Fatal(err)
-		}
-		body := string(b)
-		if strings.Index(body, "target") != -1 {
-			t.Errorf("unexpected target reference in JSON content: %v", body)
-		}
-
-		if strings.Index(body, "service") != -1 {
-			t.Errorf("unexpected service reference in JSON content: %v", body)
-		}
-
-	}))
-
-	port := ts.Listener.Addr().(*net.TCPAddr).Port
-	defer ts.Close()
-
-	err := configureDynamically(commonConfig, port)
+	err = configureDynamically(commonConfig, false)
 	if err != nil {
 		t.Errorf("unexpected error posting dynamic configuration: %v", err)
 	}
 
 	if commonConfig.Backends[0].Endpoints[0].Target != target {
 		t.Errorf("unexpected change in the configuration object after configureDynamically invocation")
+	}
+}
+
+func TestConfigureCertificates(t *testing.T) {
+	listener, err := net.Listen("unix", nginx.StatusSocket)
+	if err != nil {
+		t.Errorf("crating unix listener: %s", err)
+	}
+	defer listener.Close()
+	defer os.Remove(nginx.StatusSocket)
+
+	streamListener, err := net.Listen("unix", nginx.StreamSocket)
+	if err != nil {
+		t.Errorf("crating unix listener: %s", err)
+	}
+	defer streamListener.Close()
+	defer os.Remove(nginx.StreamSocket)
+
+	servers := []*ingress.Server{{
+		Hostname: "myapp.fake",
+		SSLCert: ingress.SSLCert{
+			PemCertKey: "fake-cert",
+		},
+	}}
+
+	server := &httptest.Server{
+		Listener: listener,
+		Config: &http.Server{
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+
+				if r.Method != "POST" {
+					t.Errorf("expected a 'POST' request, got '%s'", r.Method)
+				}
+
+				b, err := ioutil.ReadAll(r.Body)
+				if err != nil && err != io.EOF {
+					t.Fatal(err)
+				}
+				var postedServers []ingress.Server
+				err = jsoniter.ConfigCompatibleWithStandardLibrary.Unmarshal(b, &postedServers)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if len(servers) != len(postedServers) {
+					t.Errorf("Expected servers to be the same length as the posted servers")
+				}
+
+				for i, server := range servers {
+					if !server.Equal(&postedServers[i]) {
+						t.Errorf("Expected servers and posted servers to be equal")
+					}
+				}
+			}),
+		},
+	}
+	defer server.Close()
+	server.Start()
+
+	commonConfig := &ingress.Configuration{
+		Servers: servers,
+	}
+
+	err = configureCertificates(commonConfig)
+	if err != nil {
+		t.Errorf("unexpected error posting dynamic certificate configuration: %v", err)
 	}
 }
 
@@ -260,5 +413,60 @@ func TestNextPowerOf2(t *testing.T) {
 	actual = nextPowerOf2(-2)
 	if actual != 0 {
 		t.Errorf("TestNextPowerOf2: expected %d but returned %d.", 0, actual)
+	}
+}
+
+func TestCleanTempNginxCfg(t *testing.T) {
+	err := cleanTempNginxCfg()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmpfile, err := ioutil.TempFile("", tempNginxPattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tmpfile.Close()
+
+	dur, err := time.ParseDuration("-10m")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldTime := time.Now().Add(dur)
+	err = os.Chtimes(tmpfile.Name(), oldTime, oldTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmpfile, err = ioutil.TempFile("", tempNginxPattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tmpfile.Close()
+
+	err = cleanTempNginxCfg()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var files []string
+
+	err = filepath.Walk(os.TempDir(), func(path string, info os.FileInfo, err error) error {
+		if info.IsDir() && os.TempDir() != path {
+			return filepath.SkipDir
+		}
+
+		if strings.HasPrefix(info.Name(), tempNginxPattern) {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(files) != 1 {
+		t.Errorf("expected one file but %d were found", len(files))
 	}
 }
