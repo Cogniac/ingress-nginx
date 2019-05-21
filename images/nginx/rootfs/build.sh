@@ -93,7 +93,6 @@ clean-install \
   luarocks \
   libmaxminddb-dev \
   dumb-init \
-  gdb \
   valgrind \
   bc \
   || exit 1
@@ -283,20 +282,20 @@ make install
 /install_lua_resty_waf.sh
 
 # install openresty-gdb-utils
-cd /
-git clone --depth=1 https://github.com/openresty/openresty-gdb-utils.git
-cat > ~/.gdbinit << EOF
-directory /openresty-gdb-utils
+#cd /
+#git clone --depth=1 https://github.com/openresty/openresty-gdb-utils.git
+#cat > ~/.gdbinit << EOF
+#directory /openresty-gdb-utils
 
-py import sys
-py sys.path.append("/openresty-gdb-utils")
+#py import sys
+#py sys.path.append("/openresty-gdb-utils")
 
-source luajit20.gdb
-source ngx-lua.gdb
-source luajit21.py
-source ngx-raw-req.py
-set python print-stack full
-EOF
+#source luajit20.gdb
+#source ngx-lua.gdb
+#source luajit21.py
+#source ngx-raw-req.py
+#set python print-stack full
+#EOF
 
 # build opentracing lib
 cd "$BUILD_PATH/opentracing-cpp-$OPENTRACING_CPP_VERSION"
