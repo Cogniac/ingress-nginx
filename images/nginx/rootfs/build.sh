@@ -594,6 +594,9 @@ apt-get remove -y --purge \
 
 apt-get autoremove -y
 
+# remove until CVE-2019-12450 is addressed
+dpkg --remove libglib2.0-0
+
 rm -rf "$BUILD_PATH"
 rm -Rf /usr/share/man /usr/share/doc
 rm -rf /tmp/* /var/tmp/*
